@@ -1,0 +1,145 @@
+"""治理评分领域服务：多维度治理健康评分、改进跟踪和整改闭环。
+
+接收血缘追踪、标签传播、变更捕获等各上游模块的数据作为评分维度。
+"""
+from __future__ import annotations
+
+import time as _time
+from typing import Any
+
+from app.services.base import BaseModuleService
+from app.store import store
+
+
+class GovernScoreService(BaseModuleService):
+    MODULE = "govern_score"
+    ENTITY = "评分任务"
+    OPERATION_TERM = "校验"
+    LIST_FIELDS = ["任务编号", "评估对象", "评分维度", "当前分数", "改进基线", "评估周期", "预警级别", "整改状态"]
+    REQUIRED_FIELDS = ["任务编号", "评估对象", "评分维度"]
+    STATUS_ORDER = ["待评估", "评估中", "已出分", "整改中"]
+    ACTION_RULES = {"发起评估": "评估中", "确认评分": "已出分", "指派整改": "整改中"}
+    NEGATIVE_ACTIONS = ["指派整改"]
+
+    SCORE_DIMENSIONS = {
+        "元数据完备性": {"base": 100, "field": "metadata", "weight": 0.15},
+        "质量监控覆盖": {"base": 80, "field": "quality", "weight": 0.20},
+        "分级标签准确度": {"base": 70, "field": "classification", "weight": 0.15},
+        "血缘完备性": {"base": 60, "field": "lineage", "weight": 0.20},
+        "标签覆盖": {"base": 50, "field": "tag", "weight": 0.10},
+        "契约合规": {"base": 40, "field": "contract", "weight": 0.10},
+        "负责人到位": {"base": 30, "field": "owner", "weight": 0.10},
+    }
+
+    def evaluate_asset(self, asset_code: str) -> dict[str, Any]:
+        """对资产进行多维度治理评分（Pipeline 7 汇总输出）。"""
+        dimensions = {}
+
+        # 元数据完备性
+        metadata = store.find_by_field("metadata_index", "所属资产", asset_code)
+        meta_score = min(100, len(metadata) * 20)
+        dimensions["元数据完备性"] = meta_score
+
+        # 质量监控覆盖
+        quality = store.find_by_field("quality_rule", "目标资产", asset_code)
+        quality_score = min(100, len(quality) * 33)
+        dimensions["质量监控覆盖"] = quality_score
+
+        # 分级标签准确度
+        classifications = [
+            c for c in store.rows("classification")
+            if str(c.get("目标字段", "")).startswith(f"{asset_code}.")
+        ]
+        class_score = min(100, len([c for c in classifications if c.get("status") == "已确认"]) * 25)
+        dimensions["分级标签准确度"] = class_score
+
+        # 血缘完备性
+        lineage = [
+            l for l in store.rows("lineage_track")
+            if l.get("上游资产") == asset_code or l.get("下游资产") == asset_code
+        ]
+        lineage_score = min(100, len(lineage) * 25)
+        dimensions["血缘完备性"] = lineage_score
+
+        # 标签覆盖
+        tag_assets = []
+        for t in store.rows("tag_registry"):
+            tag_assets.append(t.get("关联资产数", "0"))
+        dimensions["标签覆盖"] = min(100, 50 + len(tag_assets) * 5)
+
+        # 契约合规
+        contracts = store.find_by_field("data_contract", "数据资产", asset_code)
+        contract_score = min(100, len([c for c in contracts if c.get("status") == "已签署"]) * 50)
+        dimensions["契约合规"] = contract_score
+
+        # 负责人到位
+        owners = store.find_by_field("owner_mgr", "目标资产", asset_code)
+        owner_score = min(100, len([o for o in owners if o.get("status") == "已生效"]) * 50)
+        dimensions["负责人到位"] = owner_score
+
+        # 加权总分
+        total = 0
+        weight_sum = 0
+        for dim, cfg in self.SCORE_DIMENSIONS.items():
+            score = dimensions.get(dim, cfg["base"])
+            total += score * cfg["weight"]
+            weight_sum += cfg["weight"]
+        overall = round(total / max(weight_sum, 0.01), 1)
+
+        # 保存评分记录
+        score_id = store.next_id(self.MODULE)
+        score_entry = {
+            "id": score_id,
+            "任务编号": f"GOVE-{score_id:04d}",
+            "评估对象": asset_code,
+            "评分维度": "综合评估",
+            "当前分数": str(overall),
+            "改进基线": self._compute_baseline(dimensions, overall),
+            "评估周期": "按需",
+            "预警级别": self._severity_label(overall),
+            "整改状态": "已出分",
+            "status": "已出分",
+            "pending": overall < 60,
+            "abnormal": overall < 40,
+            "dimensions": dimensions,
+            "created_at": _time.strftime("%Y-%m-%d %H:%M:%S"),
+        }
+        store.rows(self.MODULE).append(score_entry)
+
+        self.emit_event("governance_scored", {
+            "score_id": score_id,
+            "asset_code": asset_code,
+            "overall": overall,
+            "dimensions": dimensions,
+        })
+
+        return {
+            "score_id": score_id,
+            "asset": asset_code,
+            "overall": overall,
+            "dimensions": dimensions,
+            "pipeline": "lineage_track->impact_analysis->govern_score",
+        }
+
+    def _compute_baseline(self, dims: dict[str, int], overall: float) -> str:
+        """计算改进基线。"""
+        weaknesses = [(d, s) for d, s in dims.items() if s < 60]
+        if weaknesses:
+            weakest = min(weaknesses, key=lambda x: x[1])
+            return f"加强{weakest[0]}（当前{weakest[1]}分）"
+        if overall < 80:
+            return "各维度持续改进以达到优良水平"
+        return "维持当前水平"
+
+    def _severity_label(self, score: float) -> str:
+        if score >= 80:
+            return "正常"
+        elif score >= 60:
+            return "需关注"
+        elif score >= 40:
+            return "严重"
+        return "危急"
+
+    def get_scores_by_asset(self, asset_code: str) -> list[dict[str, Any]]:
+        """获取资产的所有治理评分记录。"""
+        return store.find_by_field(self.MODULE, "评估对象", asset_code)
