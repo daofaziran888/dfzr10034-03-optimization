@@ -81,5 +81,35 @@ npm run dev
 - 列表接口统一返回 `{ items, total, page, size }`，动作接口统一返回 `{ ok, message }`。
 - 状态流转只允许在 `app/services` 里改，路由层不做业务判断。
 
+## 质量越界区间
+
+质检链路由 `backend/app/services/breach_ledger.py` 负责，数据流是
+`quality_rule -> quality_breach_interval -> issue_track`：
+
+- 每条观测先记到 `quality_observation`。同一测点、同值、同观测时间的重复提交
+  （包括同一份报文换班次再投）只算一次，`duplicate=true`，不重复生成越界。
+- 越界观测按规则和规则版本归并成区间。区间保留 `观测明细`（按观测顺序）、
+  首次/最新越界值、峰值和复测记录。
+- 区间首次建立时生成治理工单。工单验证前（含刚标记已修复）再次越界继续并入
+  原区间并重新打开工单，处理人和复测负责人不变；验证后才另起区间。
+- 阈值变更通过 `revise_threshold` 或直接改阈值字段都会生成新规则版本，
+  旧观测保留各自版本号，新旧区间不会混并。
+- 结论回写工单时追加到 `修复方案` 与 `处理记录`，不覆盖处理人已有的修复记录。
+
+专用接口（注册在通用资源路由之前）：
+
+```text
+POST /api/quality_rule/{rule_id}/checks        登记观测，自动判重、归并、联动工单
+POST /api/quality_rule/{rule_id}/threshold     调整阈值并生成新版本
+GET  /api/quality_rule/versions/{rule_id}      规则版本及各版本区间
+GET  /api/quality_rule/intervals               区间列表（pending=true 只看待复测）
+GET  /api/quality_rule/intervals/{id}          区间明细
+POST /api/quality_rule/intervals/{id}/retests  登记复测
+POST /api/quality_rule/intervals/{id}/conclusion  质检结论回写工单
+GET  /api/quality_rule/issues/{issue_id}       按工单取回测点、首次越界值和最新复测
+```
+
+质量规则页和问题追踪页底部的「越界区间台账」读取上面这些接口。
+
 领域：数据工程
 子方向：数仓与数据湖

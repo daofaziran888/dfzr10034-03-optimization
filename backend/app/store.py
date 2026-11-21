@@ -17,6 +17,10 @@ from app.seed import SEED_ROWS
 class Store:
     """增强版存储层，支持跨模块读写、变更日志和快照。"""
 
+    # 质检越界台账是质量规则和问题追踪之间的内部表，不算独立业务模块，
+    # 不进入运营概览和模块计数的展示口径。
+    INTERNAL_MODULES = {"quality_breach_interval", "quality_observation"}
+
     def __init__(self) -> None:
         self._seed()
 
@@ -35,7 +39,7 @@ class Store:
     # ── 基础操作 ──────────────────────────────────────────────
 
     def module_names(self) -> list[str]:
-        return sorted(self._tables)
+        return sorted(name for name in self._tables if name not in self.INTERNAL_MODULES)
 
     def rows(self, module: str) -> list[dict[str, Any]]:
         return self._tables.setdefault(module, [])

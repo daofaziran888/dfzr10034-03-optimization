@@ -91,5 +91,8 @@ SEED_ROWS: dict[str, list[dict[str, Any]]] = {
     "owner_mgr": [{'id': 1, 'status': '待确认', 'pending': True, 'abnormal': False,
   '指派编号': 'OWNE-0001', '目标资产': '核心交易表', '负责角色': '数据负责人',
   '责任人': '张三', '备份人': '李四', '生效日期': '2026-09-01',
-  '交接记录': '-', '最后确认': '-'}]
+  '交接记录': '-', '最后确认': '-'}],
+    # 质量越界区间与观测：由 breach_ledger 维护，质检结论回写工单时按区间索引。
+    "quality_breach_interval": [],
+    "quality_observation": [],
 }

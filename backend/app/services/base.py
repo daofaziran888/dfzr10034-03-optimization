@@ -63,7 +63,11 @@ class BaseModuleService:
         entry["abnormal"] = False
         entry["created_at"] = _time.strftime("%Y-%m-%d %H:%M:%S")
         rows.append(entry)
+        self.after_create(entry, values)
         return entry, []
+
+    def after_create(self, entry: dict[str, Any], values: dict[str, Any]) -> None:
+        """登记后的领域补齐钩子，默认不做任何事。"""
 
     def run_action(self, entry_id: int, action: str) -> tuple[dict[str, Any] | None, str]:
         entry = store.find(self.MODULE, entry_id)
@@ -84,7 +88,11 @@ class BaseModuleService:
             before=old_status, after=target,
             source="action", scope=self.MODULE
         )
+        self.after_action(entry, action, old_status)
         return entry, f"{self.ENTITY}已{action}"
+
+    def after_action(self, entry: dict[str, Any], action: str, old_status: Any) -> None:
+        """动作后的领域联动钩子，默认不做任何事。"""
 
     def domain_snapshot(self) -> dict[str, Any]:
         """输出模块级数据质量快照，供跨模块消费和题位源码锚点使用。"""
